@@ -1,0 +1,403 @@
+name: Dynamic DevSecOps Pipeline with EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Customer application name"
+        required: true
+        default: "customer-app"
+
+      app_type:
+        description: "Application type"
+        required: true
+        type: choice
+        options:
+          - auto-detect
+          - nodejs
+          - python
+          - java
+          - go
+          - docker
+        default: auto-detect
+
+      scan_severity:
+        description: "Severity level to block deployment"
+        required: true
+        type: choice
+        options:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+          - LOW
+        default: HIGH
+
+      customer_email:
+        description: "Email to receive vulnerability report"
+        required: true
+
+      deploy_environment:
+        description: "Deployment environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+          - skip-deployment
+        default: dev
+
+  push:
+    branches:
+      - main
+      - develop
+
+env:
+  APP_NAME: ${{ github.event.inputs.app_name || 'customer-app' }}
+  APP_TYPE: ${{ github.event.inputs.app_type || 'auto-detect' }}
+  SCAN_SEVERITY: ${{ github.event.inputs.scan_severity || 'HIGH' }}
+  CUSTOMER_EMAIL: ${{ github.event.inputs.customer_email || 'devteam@example.com' }}
+  DEPLOY_ENV: ${{ github.event.inputs.deploy_environment || 'dev' }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  setup:
+    name: Detect Application Type
+    runs-on: ubuntu-latest
+
+    outputs:
+      app_type: ${{ steps.detect.outputs.app_type }}
+      language: ${{ steps.detect.outputs.language }}
+      has_docker: ${{ steps.detect.outputs.has_docker }}
+      has_terraform: ${{ steps.detect.outputs.has_terraform }}
+      has_k8s: ${{ steps.detect.outputs.has_k8s }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect app type
+        id: detect
+        run: |
+          chmod +x scripts/detect_app_type.sh
+          bash scripts/detect_app_type.sh "${{ env.APP_TYPE }}"
+
+      - name: Show detection result
+        run: |
+          echo "Application Name: ${{ env.APP_NAME }}"
+          echo "App Type: ${{ steps.detect.outputs.app_type }}"
+          echo "Language: ${{ steps.detect.outputs.language }}"
+          echo "Docker: ${{ steps.detect.outputs.has_docker }}"
+          echo "Terraform: ${{ steps.detect.outputs.has_terraform }}"
+          echo "Kubernetes: ${{ steps.detect.outputs.has_k8s }}"
+
+  security_scans:
+    name: Run All Security Scans
+    runs-on: ubuntu-latest
+    needs: setup
+
+    outputs:
+      critical_count: ${{ steps.compile.outputs.critical_count }}
+      high_count: ${{ steps.compile.outputs.high_count }}
+      medium_count: ${{ steps.compile.outputs.medium_count }}
+      low_count: ${{ steps.compile.outputs.low_count }}
+      secrets_count: ${{ steps.compile.outputs.secrets_count }}
+      policy_failed: ${{ steps.opa.outputs.policy_failed }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Secret scan with GitLeaks
+        continue-on-error: true
+        run: |
+          curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar xz -C /tmp
+
+          /tmp/gitleaks detect \
+            --source . \
+            --report-format json \
+            --report-path reports/gitleaks-report.json \
+            --exit-code 0 || true
+
+      - name: SonarCloud SAST scan
+        continue-on-error: true
+        run: |
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo '{"status":"skipped","message":"SONAR_TOKEN not configured"}' > reports/sonar-report.json
+            exit 0
+          fi
+
+          npm install -g sonarqube-scanner
+
+          sonar-scanner \
+            -Dsonar.projectKey="${{ env.APP_NAME }}" \
+            -Dsonar.organization="${{ secrets.SONAR_ORG }}" \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.token="${{ secrets.SONAR_TOKEN }}" || true
+
+          echo '{"status":"completed","tool":"SonarCloud"}' > reports/sonar-report.json
+
+      - name: Dependency scan
+        continue-on-error: true
+        run: |
+          APP="${{ needs.setup.outputs.app_type }}"
+
+          if [ "$APP" = "nodejs" ] && [ -f "package.json" ]; then
+            npm install || true
+            npm audit --json > reports/npm-audit.json 2>&1 || true
+          fi
+
+          if [ "$APP" = "python" ] && [ -f "requirements.txt" ]; then
+            pip install safety -q
+            safety check -r requirements.txt --json > reports/safety-report.json 2>&1 || true
+          fi
+
+          if [ "$APP" = "java" ] && [ -f "pom.xml" ]; then
+            mvn dependency:resolve org.owasp:dependency-check-maven:check \
+              -Dformat=JSON \
+              -DoutputDirectory=reports || true
+          fi
+
+          if [ "$APP" = "go" ] && [ -f "go.mod" ]; then
+            go install github.com/securego/gosec/v2/cmd/gosec@latest || true
+            ~/go/bin/gosec -fmt json -out reports/gosec-report.json ./... || true
+          fi
+
+      - name: Snyk dependency scan
+        continue-on-error: true
+        run: |
+          if [ -z "${{ secrets.SNYK_TOKEN }}" ]; then
+            echo '{"status":"skipped","message":"SNYK_TOKEN not configured"}' > reports/snyk-report.json
+            exit 0
+          fi
+
+          npm install -g snyk
+          snyk auth "${{ secrets.SNYK_TOKEN }}"
+          snyk test --json > reports/snyk-report.json 2>&1 || true
+
+      - name: Container scan with Trivy
+        continue-on-error: true
+        if: needs.setup.outputs.has_docker == 'true'
+        run: |
+          docker build -t local-scan-image:${{ env.IMAGE_TAG }} . || true
+
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+          trivy image \
+            --format json \
+            --output reports/trivy-report.json \
+            --severity LOW,MEDIUM,HIGH,CRITICAL \
+            local-scan-image:${{ env.IMAGE_TAG }} || true
+
+      - name: IaC scan with Checkov
+        continue-on-error: true
+        run: |
+          pip install checkov -q
+          checkov -d . \
+            --framework terraform,kubernetes,dockerfile \
+            --output json \
+            > reports/checkov-report.json 2>&1 || true
+
+      - name: Compile scan results
+        id: compile
+        run: |
+          python3 scripts/compile_scan_results.py \
+            --reports-dir reports \
+            --output reports/scan-summary.json
+
+          echo "critical_count=$(jq -r '.critical_count' reports/scan-summary.json)" >> $GITHUB_OUTPUT
+          echo "high_count=$(jq -r '.high_count' reports/scan-summary.json)" >> $GITHUB_OUTPUT
+          echo "medium_count=$(jq -r '.medium_count' reports/scan-summary.json)" >> $GITHUB_OUTPUT
+          echo "low_count=$(jq -r '.low_count' reports/scan-summary.json)" >> $GITHUB_OUTPUT
+          echo "secrets_count=$(jq -r '.secrets_count' reports/scan-summary.json)" >> $GITHUB_OUTPUT
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+          opa version
+
+      - name: OPA policy evaluation
+        id: opa
+        continue-on-error: true
+        run: |
+          opa eval \
+            --format json \
+            --data policy/deployment_policy.rego \
+            --input reports/scan-summary.json \
+            "data.devsecops.policy.deny" \
+            > reports/opa-result.json
+
+          DENY_COUNT=$(jq '.result[0].expressions[0].value | length' reports/opa-result.json)
+
+          if [ "$DENY_COUNT" -gt 0 ]; then
+            echo "policy_failed=true" >> $GITHUB_OUTPUT
+            echo "OPA policy failed"
+            cat reports/opa-result.json
+          else
+            echo "policy_failed=false" >> $GITHUB_OUTPUT
+            echo "OPA policy passed"
+          fi
+
+      - name: Upload raw reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-security-reports-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
+
+  excel_report:
+    name: Generate Excel Security Report
+    runs-on: ubuntu-latest
+    needs: security_scans
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download raw reports
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-security-reports-${{ github.run_id }}
+          path: reports/
+
+      - name: Install Excel dependencies
+        run: pip install openpyxl pandas -q
+
+      - name: Generate Excel report
+        run: |
+          python3 scripts/generate_excel_report.py \
+            --reports-dir reports \
+            --app-name "${{ env.APP_NAME }}" \
+            --run-id "${{ github.run_id }}" \
+            --output reports/security-report-${{ env.APP_NAME }}.xlsx
+
+      - name: Upload Excel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SECURITY-EXCEL-REPORT-${{ env.APP_NAME }}-${{ github.run_id }}
+          path: reports/security-report-${{ env.APP_NAME }}.xlsx
+          retention-days: 60
+
+  send_email_alert:
+    name: Send Email Alert If Policy Failed
+    runs-on: ubuntu-latest
+    needs: [security_scans, excel_report]
+    if: needs.security_scans.outputs.policy_failed == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download reports
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-security-reports-${{ github.run_id }}
+          path: reports/
+
+      - name: Download Excel report
+        uses: actions/download-artifact@v4
+        with:
+          name: SECURITY-EXCEL-REPORT-${{ env.APP_NAME }}-${{ github.run_id }}
+          path: reports/
+
+      - name: Install SendGrid
+        run: pip install sendgrid -q
+
+      - name: Send vulnerability email
+        env:
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          PIPELINE_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/send_alert_email.py \
+            --to "${{ env.CUSTOMER_EMAIL }}" \
+            --from-email "${{ secrets.ALERT_FROM_EMAIL }}" \
+            --app-name "${{ env.APP_NAME }}" \
+            --critical "${{ needs.security_scans.outputs.critical_count }}" \
+            --high "${{ needs.security_scans.outputs.high_count }}" \
+            --medium "${{ needs.security_scans.outputs.medium_count }}" \
+            --pipeline-url "$PIPELINE_URL" \
+            --reports-dir reports
+
+  manual_approval:
+    name: Manual Approval Before Deployment
+    runs-on: ubuntu-latest
+    needs: [security_scans, send_email_alert]
+    if: needs.security_scans.outputs.policy_failed == 'true'
+
+    environment:
+      name: vulnerability-review
+
+    steps:
+      - name: Approved
+        run: |
+          echo "Manual approval received. Deployment can continue."
+
+  deploy_to_eks:
+    name: Deploy to Amazon EKS
+    runs-on: ubuntu-latest
+    needs: [setup, security_scans, manual_approval]
+    if: |
+      always() &&
+      github.event.inputs.deploy_environment != 'skip-deployment' &&
+      needs.security_scans.result == 'success' &&
+      (
+        needs.security_scans.outputs.policy_failed == 'false' ||
+        needs.manual_approval.result == 'success'
+      )
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Connect kubectl to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name "${{ secrets.EKS_CLUSTER_NAME }}"
+
+          kubectl get nodes
+
+      - name: Deploy to EKS
+        run: |
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
+
+          sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml > k8s/deployment-final.yaml
+
+          kubectl apply -f k8s/deployment-final.yaml
+          kubectl apply -f k8s/service.yaml
+
+          kubectl rollout status deployment/devsecops-app
+
+      - name: Show service URL
+        run: |
+          kubectl get svc devsecops-service
