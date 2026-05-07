@@ -672,27 +672,15 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          SAFE_APP_NAME=$(echo "${{ env.APP_NAME }}" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9._-]/-/g' \
-            | sed 's/_/-/g' \
-            | sed 's/--*/-/g' \
-            | sed 's/^[.-]*//' \
-            | sed 's/[.-]*$//')
+          chmod +x scripts/dynamic_docker_build.sh
 
-          IMAGE="${{ secrets.DOCKER_USERNAME }}/${SAFE_APP_NAME}:${{ env.IMAGE_TAG }}"
-
-          echo "Original app name: ${{ env.APP_NAME }}"
-          echo "Docker-safe app name: $SAFE_APP_NAME"
-          echo "Docker image: $IMAGE"
-
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
-
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> $GITHUB_ENV
+          bash scripts/dynamic_docker_build.sh \
+            "${{ env.APP_NAME }}" \
+            "${{ env.IMAGE_TAG }}" \
+            "${{ secrets.DOCKER_USERNAME }}"
 
       - name: Connect kubectl to EKS
+        if: env.DEPLOYABLE == 'true'
         run: |
           aws eks update-kubeconfig \
             --region "${{ secrets.AWS_REGION }}" \
@@ -701,6 +689,7 @@ jobs:
           kubectl get nodes
 
       - name: Deploy to EKS
+        if: env.DEPLOYABLE == 'true'
         run: |
           IMAGE="${{ env.IMAGE }}"
           echo "Deploying image to EKS: $IMAGE"
@@ -713,5 +702,23 @@ jobs:
           kubectl rollout status deployment/devsecops-app
 
       - name: Show service URL
+        if: env.DEPLOYABLE == 'true'
         run: |
           kubectl get svc devsecops-service
+
+      - name: Deployment skipped message
+        if: env.DEPLOYABLE != 'true'
+        run: |
+          echo "=================================================="
+          echo "DEPLOYMENT SKIPPED"
+          echo "=================================================="
+          echo "Security scans, Excel report, email alert, and approval flow completed."
+          echo ""
+          echo "EKS deployment was skipped because the uploaded customer repository"
+          echo "does not contain a deployable Node.js app with package.json."
+          echo ""
+          echo "To deploy, the customer repo must contain:"
+          echo "1. package.json"
+          echo "2. npm start script"
+          echo "3. app listening on port 3000"
+          echo "=================================================="
