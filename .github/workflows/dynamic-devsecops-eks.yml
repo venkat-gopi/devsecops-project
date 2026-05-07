@@ -680,17 +680,17 @@ jobs:
             | sed 's/^[.-]*//' \
             | sed 's/[.-]*$//')
 
-        IMAGE="${{ secrets.DOCKER_USERNAME }}/${SAFE_APP_NAME}:${{ env.IMAGE_TAG }}"
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/${SAFE_APP_NAME}:${{ env.IMAGE_TAG }}"
 
-        echo "Original app name: ${{ env.APP_NAME }}"
-        echo "Docker-safe app name: $SAFE_APP_NAME"
-        echo "Docker image: $IMAGE"
+          echo "Original app name: ${{ env.APP_NAME }}"
+          echo "Docker-safe app name: $SAFE_APP_NAME"
+          echo "Docker image: $IMAGE"
 
-        docker build -t "$IMAGE" .
-        docker push "$IMAGE"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
 
-        echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-        echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> $GITHUB_ENV
 
       - name: Connect kubectl to EKS
         run: |
