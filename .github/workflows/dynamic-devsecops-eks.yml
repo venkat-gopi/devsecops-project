@@ -447,13 +447,11 @@ jobs:
 
           if [ "$DENY_COUNT" -gt 0 ]; then
             echo "policy_failed=true" >> $GITHUB_OUTPUT
-            echo "OPA POLICY RESULT: FAILED"
-            echo "Deployment will require manual approval."
+            echo "OPA POLICY FAILED"
             cat reports/opa-result.json
           else
             echo "policy_failed=false" >> $GITHUB_OUTPUT
-            echo "OPA POLICY RESULT: PASSED"
-            echo "Deployment can continue automatically."
+            echo "OPA POLICY PASSED"
           fi
 
       - name: Customer Security Scan Summary
@@ -486,68 +484,53 @@ jobs:
           echo "Excel report will be generated in the next job."
           echo "=================================================="
 
-      - name: Upload raw reports
+
+      - name: Generate individual Excel reports
+        if: always()
+        run: |
+          pip install openpyxl -q
+
+          python3 scripts/generate_individual_excel_reports.py \
+            --reports-dir reports \
+            --output-dir reports \
+            --app-name "${{ env.APP_NAME }}"
+
+      - name: Upload raw JSON reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-security-reports-${{ github.run_id }}
-          path: reports/
+          name: raw-json-security-reports-${{ github.run_id }}
+          path: reports/*.json
           retention-days: 30
 
-  excel_report:
-    name: Generate Excel Security Report
-    runs-on: ubuntu-latest
-    needs: security_scans
-    if: always()
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download raw reports
-        uses: actions/download-artifact@v4
-        with:
-          name: raw-security-reports-${{ github.run_id }}
-          path: reports/
-
-      - name: Install Excel dependencies
-        run: pip install openpyxl pandas -q
-
-      - name: Generate Excel report
-        run: |
-          python3 scripts/generate_excel_report.py \
-            --reports-dir reports \
-            --app-name "${{ env.APP_NAME }}" \
-            --run-id "${{ github.run_id }}" \
-            --output reports/security-report-${{ env.APP_NAME }}.xlsx
-
-      - name: Upload Excel artifact
+      - name: Upload individual Excel reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SECURITY-EXCEL-REPORT-${{ env.APP_NAME }}-${{ github.run_id }}
-          path: reports/security-report-${{ env.APP_NAME }}.xlsx
+          name: individual-excel-security-reports-${{ github.run_id }}
+          path: reports/*.xlsx
           retention-days: 60
 
   send_email_alert:
     name: Send Email Alert If Policy Failed
     runs-on: ubuntu-latest
-    needs: [security_scans, excel_report]
+    needs: security_scans
     if: needs.security_scans.outputs.policy_failed == 'true'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download reports
+      - name: Download raw JSON reports
         uses: actions/download-artifact@v4
         with:
-          name: raw-security-reports-${{ github.run_id }}
+          name: raw-json-security-reports-${{ github.run_id }}
           path: reports/
 
-      - name: Download Excel report
+      - name: Download Excel reports
         uses: actions/download-artifact@v4
         with:
-          name: SECURITY-EXCEL-REPORT-${{ env.APP_NAME }}-${{ github.run_id }}
+          name: individual-excel-security-reports-${{ github.run_id }}
           path: reports/
 
       - name: Install SendGrid
@@ -556,7 +539,6 @@ jobs:
       - name: Send vulnerability email
         env:
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
-          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
           PIPELINE_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 scripts/send_alert_email.py \
@@ -579,17 +561,18 @@ jobs:
       name: vulnerability-review
 
     steps:
-      - name: Approved
+      - name: Manual approval completed
         run: |
-          echo "Manual approval received. Deployment can continue."
+          echo "Reviewer approved deployment."
+          echo "Proceeding to EKS deployment."
 
   deploy_to_eks:
     name: Deploy to Amazon EKS
     runs-on: ubuntu-latest
-    needs: [setup, security_scans, manual_approval]
+    needs: [security_scans, manual_approval]
+
     if: |
       always() &&
-      github.event.inputs.deploy_environment != 'skip-deployment' &&
       needs.security_scans.result == 'success' &&
       (
         needs.security_scans.outputs.policy_failed == 'false' ||
@@ -599,6 +582,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Customer app intake
+        run: |
+          rm -rf app
+          mkdir -p app
+
+          if [ "${{ github.event.inputs.customer_source }}" = "external-github-repo" ]; then
+            git clone "${{ github.event.inputs.customer_repo_url }}" app
+            rm -rf app/.git
+          else
+            rsync -av ./ app/ \
+              --exclude ".git" \
+              --exclude ".github" \
+              --exclude "scripts" \
+              --exclude "reports" \
+              --exclude "policy" \
+              --exclude "k8s" \
+              --exclude "app"
+          fi
+
+          echo "Customer Dockerfile:"
+          find app -name "Dockerfile" -type f
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -613,74 +618,17 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Generate Dockerfile if missing
+      - name: Build and push Docker image using customer Dockerfile
         run: |
-          APP="${{ needs.setup.outputs.app_type }}"
+          chmod +x scripts/dockerfile_first_build.sh
 
-          if [ -f Dockerfile ]; then
-            echo "Dockerfile already exists"
-            exit 0
-          fi
-
-          echo "Dockerfile not found. Generating Dockerfile for app type: $APP"
-
-          if [ "$APP" = "nodejs" ]; then
-            cat > Dockerfile <<'EOF'
-          FROM node:18-alpine
-          WORKDIR /app
-          COPY package*.json ./
-          RUN npm install
-          COPY . .
-          EXPOSE 3000
-          CMD ["npm", "start"]
-          EOF
-          fi
-
-          if [ "$APP" = "python" ]; then
-            cat > Dockerfile <<'EOF'
-          FROM python:3.11-slim
-          WORKDIR /app
-          COPY requirements.txt .
-          RUN pip install --no-cache-dir -r requirements.txt
-          COPY . .
-          EXPOSE 5000
-          CMD ["python", "app.py"]
-          EOF
-          fi
-
-          if [ "$APP" = "java" ]; then
-            cat > Dockerfile <<'EOF'
-          FROM maven:3.9-eclipse-temurin-17 AS build
-          WORKDIR /app
-          COPY . .
-          RUN mvn clean package -DskipTests
-
-          FROM eclipse-temurin:17-jre
-          WORKDIR /app
-          COPY --from=build /app/target/*.jar app.jar
-          EXPOSE 8080
-          CMD ["java", "-jar", "app.jar"]
-          EOF
-          fi
-
-          if [ ! -f Dockerfile ]; then
-            echo "No Dockerfile exists and auto-generation failed."
-            exit 1
-          fi
-
-          cat Dockerfile
-
-      - name: Build and push Docker image
-        run: |
-          chmod +x scripts/dynamic_docker_build.sh
-
-          bash scripts/dynamic_docker_build.sh \
+          bash scripts/dockerfile_first_build.sh \
             "${{ env.APP_NAME }}" \
             "${{ env.IMAGE_TAG }}" \
-            "${{ secrets.DOCKER_USERNAME }}"
+            "${{ secrets.DOCKER_USERNAME }}" \
+            "push"
 
       - name: Connect kubectl to EKS
-        if: env.DEPLOYABLE == 'true'
         run: |
           aws eks update-kubeconfig \
             --region "${{ secrets.AWS_REGION }}" \
@@ -689,36 +637,32 @@ jobs:
           kubectl get nodes
 
       - name: Deploy to EKS
-        if: env.DEPLOYABLE == 'true'
         run: |
           IMAGE="${{ env.IMAGE }}"
-          echo "Deploying image to EKS: $IMAGE"
+          APP_PORT="${{ env.APP_PORT }}"
 
-          sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml > k8s/deployment-final.yaml
+          if [ -z "$APP_PORT" ]; then
+            APP_PORT="80"
+          fi
+
+          echo "Deploying image: $IMAGE"
+          echo "Application port: $APP_PORT"
+
+          sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml \
+            | sed "s|CONTAINER_PORT_PLACEHOLDER|$APP_PORT|g" \
+            > k8s/deployment-final.yaml
+
+          sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
+            > k8s/service-final.yaml
 
           kubectl apply -f k8s/deployment-final.yaml
-          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/service-final.yaml
 
-          kubectl rollout status deployment/devsecops-app
+          kubectl rollout status deployment/devsecops-app --timeout=180s
 
       - name: Show service URL
-        if: env.DEPLOYABLE == 'true'
         run: |
+          kubectl get pods -o wide
           kubectl get svc devsecops-service
 
-      - name: Deployment skipped message
-        if: env.DEPLOYABLE != 'true'
-        run: |
-          echo "=================================================="
-          echo "DEPLOYMENT SKIPPED"
-          echo "=================================================="
-          echo "Security scans, Excel report, email alert, and approval flow completed."
-          echo ""
-          echo "EKS deployment was skipped because the uploaded customer repository"
-          echo "does not contain a deployable Node.js app with package.json."
-          echo ""
-          echo "To deploy, the customer repo must contain:"
-          echo "1. package.json"
-          echo "2. npm start script"
-          echo "3. app listening on port 3000"
-          echo "=================================================="
+          echo "If EXTERNAL-IP is pending, wait 1-2 minutes and check again."

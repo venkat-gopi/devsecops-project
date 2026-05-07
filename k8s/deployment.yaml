@@ -17,8 +17,6 @@ spec:
       containers:
         - name: devsecops-app
           image: DOCKER_IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
           ports:
-            - containerPort: 3000
-          env:
-            - name: NODE_ENV
-              value: "production"
+            - containerPort: CONTAINER_PORT_PLACEHOLDER

@@ -215,8 +215,7 @@ def build_html_email(app_name, critical, high, medium,
 </html>"""
 
 # ────────────────────────────────────────────────────────────
-def send_email(to, from_email, subject, html_content,
-               attachment_path=None):
+def send_email(to, from_email, subject, html_content, attachment_paths=None):
     try:
         from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import (
@@ -232,18 +231,30 @@ def send_email(to, from_email, subject, html_content,
             html_content=html_content
         )
 
-        # Attach Excel report if it exists
-        if attachment_path and os.path.exists(attachment_path):
-            with open(attachment_path, "rb") as f:
-                encoded = base64.b64encode(f.read()).decode()
-            attachment = Attachment(
-                FileContent(encoded),
-                FileName(os.path.basename(attachment_path)),
-                FileType("application/vnd.openxmlformats-officedocument"
-                         ".spreadsheetml.sheet"),
-                Disposition("attachment")
-            )
-            message.attachment = attachment
+        if attachment_paths:
+            attachments = []
+
+            for attachment_path in attachment_paths:
+                if not os.path.exists(attachment_path):
+                    continue
+
+                with open(attachment_path, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode()
+
+                attachment = Attachment(
+                    FileContent(encoded),
+                    FileName(os.path.basename(attachment_path)),
+                    FileType(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                    Disposition("attachment")
+                )
+
+                attachments.append(attachment)
+
+            if attachments:
+                message.attachment = attachments
 
         sg = SendGridAPIClient(os.environ["SENDGRID_API_KEY"])
         response = sg.send(message)
@@ -253,7 +264,6 @@ def send_email(to, from_email, subject, html_content,
     except Exception as e:
         print(f"Email failed: {e}")
         return False
-
 # ────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
@@ -268,11 +278,12 @@ def main():
     args = parser.parse_args()
 
     # Find Excel attachment
-    excel_path = None
+    excel_paths = []
     for f in os.listdir(args.reports_dir):
         if f.endswith(".xlsx"):
-            excel_path = os.path.join(args.reports_dir, f)
-            break
+            excel_paths.append(os.path.join(args.reports_dir, f))
+
+    print(f"Excel reports attached: {len(excel_paths)}")
 
     rows    = build_vulnerability_rows(args.reports_dir)
     html    = build_html_email(
@@ -287,7 +298,7 @@ def main():
         from_email=args.from_email,
         subject=subject,
         html_content=html,
-        attachment_path=excel_path
+        attachment_paths=excel_paths
     )
 
 if __name__ == "__main__":
