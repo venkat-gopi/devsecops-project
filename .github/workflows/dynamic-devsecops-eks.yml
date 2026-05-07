@@ -672,10 +672,25 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          SAFE_APP_NAME=$(echo "${{ env.APP_NAME }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9._-]/-/g' \
+            | sed 's/_/-/g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^[.-]*//' \
+            | sed 's/[.-]*$//')
+
+        IMAGE="${{ secrets.DOCKER_USERNAME }}/${SAFE_APP_NAME}:${{ env.IMAGE_TAG }}"
+
+        echo "Original app name: ${{ env.APP_NAME }}"
+        echo "Docker-safe app name: $SAFE_APP_NAME"
+        echo "Docker image: $IMAGE"
+
+        docker build -t "$IMAGE" .
+        docker push "$IMAGE"
+
+        echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+        echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> $GITHUB_ENV
 
       - name: Connect kubectl to EKS
         run: |
@@ -687,7 +702,8 @@ jobs:
 
       - name: Deploy to EKS
         run: |
-          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
+          IMAGE="${{ env.IMAGE }}"
+          echo "Deploying image to EKS: $IMAGE"
 
           sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml > k8s/deployment-final.yaml
 
