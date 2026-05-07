@@ -256,7 +256,8 @@ def build_container_sheet(ws, reports_dir):
 
 
 def build_iac_sheet(ws, reports_dir):
-    headers = ["Check ID", "Severity", "Resource", "File", "Description", "Guideline"]
+    headers = ["Check ID", "Severity", "Resource",
+               "File", "Description", "Guideline"]
     write_header_row(ws, headers)
 
     checkov = load_json(os.path.join(reports_dir, "checkov-report.json"))
@@ -264,14 +265,22 @@ def build_iac_sheet(ws, reports_dir):
 
     if checkov:
         failed = checkov.get("results", {}).get("failed_checks", [])
+
         for check in failed:
+            guideline = check.get("guideline") or "N/A"
+            description = (
+                check.get("check_name")
+                or check.get("check_result", {}).get("result")
+                or "FAILED"
+            )
+
             rows.append([
-                check.get("check_id", "N/A"),
+                check.get("check_id") or "N/A",
                 "HIGH",
-                check.get("resource", "N/A"),
-                check.get("file_path", "N/A"),
-                check.get("check_result", {}).get("result", "FAILED"),
-                check.get("guideline", "N/A")[:80]
+                check.get("resource") or "N/A",
+                check.get("file_path") or "N/A",
+                description,
+                str(guideline)[:80]
             ])
 
     if not rows:
@@ -290,7 +299,6 @@ def build_iac_sheet(ws, reports_dir):
 
     auto_column_width(ws)
     return len(rows)
-
 
 def build_opa_sheet(ws, reports_dir):
     headers = ["Decision", "Result", "Reason", "Input File"]
