@@ -256,18 +256,38 @@ def build_container_sheet(ws, reports_dir):
 
 
 def build_iac_sheet(ws, reports_dir):
-    headers = ["Check ID", "Severity", "Resource",
+    headers = ["Check Type", "Check ID", "Severity", "Resource",
                "File", "Description", "Guideline"]
     write_header_row(ws, headers)
 
     checkov = load_json(os.path.join(reports_dir, "checkov-report.json"))
     rows = []
 
-    if checkov:
-        failed = checkov.get("results", {}).get("failed_checks", [])
+    def extract_failed_checks(checkov_block, check_type="IaC"):
+        if not isinstance(checkov_block, dict):
+            return
 
-        for check in failed:
+        actual_check_type = (
+            checkov_block.get("check_type")
+            or checkov_block.get("framework")
+            or check_type
+            or "IaC"
+        )
+
+        results = checkov_block.get("results", {})
+        if not isinstance(results, dict):
+            return
+
+        failed_checks = results.get("failed_checks", [])
+        if not isinstance(failed_checks, list):
+            return
+
+        for check in failed_checks:
+            if not isinstance(check, dict):
+                continue
+
             guideline = check.get("guideline") or "N/A"
+
             description = (
                 check.get("check_name")
                 or check.get("check_result", {}).get("result")
@@ -275,6 +295,7 @@ def build_iac_sheet(ws, reports_dir):
             )
 
             rows.append([
+                actual_check_type,
                 check.get("check_id") or "N/A",
                 "HIGH",
                 check.get("resource") or "N/A",
@@ -283,8 +304,16 @@ def build_iac_sheet(ws, reports_dir):
                 str(guideline)[:80]
             ])
 
+    if isinstance(checkov, list):
+        for block in checkov:
+            extract_failed_checks(block)
+    elif isinstance(checkov, dict):
+        extract_failed_checks(checkov)
+    else:
+        checkov = None
+
     if not rows:
-        ws.append(["No IaC issues found", "", "", "", "", ""])
+        ws.append(["No IaC issues found", "", "", "", "", "", ""])
         style_cell(ws.cell(row=2, column=1), "PASS")
         auto_column_width(ws)
         return 0
@@ -293,9 +322,9 @@ def build_iac_sheet(ws, reports_dir):
         row_num = idx + 2
         for col, val in enumerate(row_data, 1):
             cell = ws.cell(row=row_num, column=col, value=val)
-            style_cell(cell, "HIGH" if col == 2
+            style_cell(cell, "HIGH" if col == 3
                        else ("ALT_ROW" if idx % 2 == 0 else "WHITE"))
-        ws.row_dimensions[row_num].height = 20
+        ws.row_dimensions[row_num].height = 22
 
     auto_column_width(ws)
     return len(rows)

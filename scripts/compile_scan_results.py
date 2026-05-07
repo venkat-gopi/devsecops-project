@@ -73,10 +73,18 @@ def main():
 
     # Checkov
     checkov = load_json(os.path.join(reports_dir, "checkov-report.json"))
+ 
     if isinstance(checkov, dict):
         failed = checkov.get("results", {}).get("failed_checks", [])
-        high += len(failed)
+        if isinstance(failed, list):
+            high += len(failed)
 
+    elif isinstance(checkov, list):
+        for block in checkov:
+            if isinstance(block, dict):
+                failed = block.get("results", {}).get("failed_checks", [])
+                if isinstance(failed, list):
+                    high += len(failed)
     result = {
         "critical_count": critical,
         "high_count": high,
