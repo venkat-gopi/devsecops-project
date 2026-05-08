@@ -718,17 +718,22 @@ jobs:
             "${{ env.IMAGE_TAG }}" \
             "${{ secrets.DOCKER_USERNAME }}" \
             "push"
+      - name: Verify Docker image variables
+        run: |
+          echo "=================================================="
+          echo "VERIFYING DOCKER IMAGE VARIABLES"
+          echo "=================================================="
 
-          echo "Image from build script: $IMAGE"
-          echo "App port from build script: $APP_PORT"
+          echo "Image from previous step: $IMAGE"
+          echo "App port from previous step: $APP_PORT"
 
           if [ -z "$IMAGE" ]; then
-            echo "ERROR: IMAGE is empty after Docker build."
+            echo "ERROR: IMAGE is empty. dockerfile_first_build.sh did not export IMAGE to GITHUB_ENV."
             exit 1
           fi
 
           if [ -z "$APP_PORT" ]; then
-            echo "APP_PORT empty, defaulting to 80"
+            echo "APP_PORT is empty. Defaulting to 80."
             echo "APP_PORT=80" >> "$GITHUB_ENV"
           fi
 
