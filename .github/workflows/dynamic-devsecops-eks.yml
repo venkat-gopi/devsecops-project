@@ -771,6 +771,12 @@ jobs:
           sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
             | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
             > k8s/service-dev.yaml
+          
+          echo "Generated deployment file:"
+          cat k8s/deployment-dev.yaml
+
+          echo "Generated service file:"
+          cat k8s/service-dev.yaml
 
           kubectl apply -n "$ENV_NAME" -f k8s/deployment-dev.yaml
           kubectl apply -n "$ENV_NAME" -f k8s/service-dev.yaml
@@ -803,6 +809,12 @@ jobs:
             | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
             > k8s/service-staging.yaml
 
+          echo "Generated deployment file:"
+          cat k8s/deployment-dev.yaml
+
+          echo "Generated service file:"
+          cat k8s/service-dev.yaml
+
           kubectl apply -n "$ENV_NAME" -f k8s/deployment-staging.yaml
           kubectl apply -n "$ENV_NAME" -f k8s/service-staging.yaml
 
@@ -833,6 +845,12 @@ jobs:
           sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
             | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
             > k8s/service-production.yaml
+
+          echo "Generated deployment file:"
+          cat k8s/deployment-dev.yaml
+
+          echo "Generated service file:"
+          cat k8s/service-dev.yaml
 
           kubectl apply -n "$ENV_NAME" -f k8s/deployment-production.yaml
           kubectl apply -n "$ENV_NAME" -f k8s/service-production.yaml
