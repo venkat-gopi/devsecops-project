@@ -376,26 +376,34 @@ jobs:
           echo "LAYER 4: CONTAINER IMAGE SCANNING"
           echo "=================================================="
           echo "Purpose:"
-          echo "This scan checks the same Docker image build path that will later be used for deployment."
+          echo "This scan validates and scans the same Docker image build path that will later be used for deployment."
           echo ""
 
+          mkdir -p reports
+
+          # Default: block deployment unless full container build + scan completes
           echo "container_build_ok=false" >> "$GITHUB_OUTPUT"
+
+          if [ ! -d app ]; then
+            echo "ERROR: app/ folder not found. Customer app intake step may be missing."
+
+            python3 -c 'import json, os; os.makedirs("reports", exist_ok=True); open("reports/trivy-report.json", "w").write(json.dumps({"Results": [], "status": "app_folder_missing", "message": "app/ folder not found. Deployment is blocked."}, indent=2))'
+
+            exit 0
+          fi
 
           if ! find app -name "Dockerfile" -type f | grep -q .; then
             echo "ERROR: No Dockerfile found inside customer app folder."
-            cat > reports/trivy-report.json <<EOF
-      {
-        "Results": [],
-        "status": "dockerfile_missing",
-        "message": "No Dockerfile found inside app/. Deployment is blocked."
-      }
-      EOF
+
+            python3 -c 'import json, os; os.makedirs("reports", exist_ok=True); open("reports/trivy-report.json", "w").write(json.dumps({"Results": [], "status": "dockerfile_missing", "message": "No Dockerfile found inside app/. Deployment is blocked."}, indent=2))'
+
             exit 0
           fi
 
           chmod +x scripts/dockerfile_first_build.sh
 
           echo "Building customer Docker image in scan-only mode..."
+
           if ! bash scripts/dockerfile_first_build.sh \
             "${{ env.APP_NAME }}" \
             "${{ env.IMAGE_TAG }}" \
@@ -403,28 +411,50 @@ jobs:
             "scan-only"; then
 
             echo "ERROR: Docker build failed during container scanning."
-            cat > reports/trivy-report.json <<EOF
-      {
-        "Results": [],
-        "status": "docker_build_failed",
-        "message": "Customer Dockerfile build failed during security scanning. Deployment is blocked."
-      }
-      EOF
+
+            python3 -c 'import json, os; os.makedirs("reports", exist_ok=True); open("reports/trivy-report.json", "w").write(json.dumps({"Results": [], "status": "docker_build_failed", "message": "Customer Dockerfile build failed during security scanning. Deployment is blocked."}, indent=2))'
+
             exit 0
           fi
 
-          echo "container_build_ok=true" >> "$GITHUB_OUTPUT"
+          # IMAGE is written to GITHUB_ENV by dockerfile_first_build.sh.
+          # In the same step, we must read it manually.
+          IMAGE_TO_SCAN=$(grep '^IMAGE=' "$GITHUB_ENV" | tail -1 | cut -d'=' -f2-)
 
+          if [ -z "$IMAGE_TO_SCAN" ]; then
+            echo "ERROR: Docker image name was not generated."
+
+            python3 -c 'import json, os; os.makedirs("reports", exist_ok=True); open("reports/trivy-report.json", "w").write(json.dumps({"Results": [], "status": "image_name_missing", "message": "Docker image name was not generated after build. Deployment is blocked."}, indent=2))'
+
+            exit 0
+          fi
+
+          echo "Docker build completed successfully."
+          echo "Image to scan: $IMAGE_TO_SCAN"
+
+          echo "Installing Trivy..."
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
+
+          echo "Running Trivy container image scan..."
 
           trivy image \
             --format json \
             --output reports/trivy-report.json \
             --severity LOW,MEDIUM,HIGH,CRITICAL \
-            "$IMAGE" || true
+            "$IMAGE_TO_SCAN" || true
 
-          echo "Container image scanning completed."
+          if [ ! -f reports/trivy-report.json ]; then
+            echo "ERROR: Trivy report was not generated."
+
+            python3 -c 'import json, os; os.makedirs("reports", exist_ok=True); open("reports/trivy-report.json", "w").write(json.dumps({"Results": [], "status": "trivy_scan_failed", "message": "Trivy scan failed or report was not generated. Deployment is blocked."}, indent=2))'
+
+            exit 0
+          fi
+
+          echo "container_build_ok=true" >> "$GITHUB_OUTPUT"
+
+          echo "Container image build and scanning completed successfully."
           echo "Report generated: reports/trivy-report.json"
 
       - name: "Layer 5: Infrastructure as Code Scanning"
