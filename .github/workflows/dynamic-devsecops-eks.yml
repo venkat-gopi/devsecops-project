@@ -654,7 +654,7 @@ jobs:
       always() &&
       needs.security_scans.result == 'success' &&
       needs.security_scans.outputs.container_build_ok == 'true' &&
-      env.DEPLOY_ENV != 'skip-deployment' &&
+      github.event.inputs.deploy_environment != 'skip-deployment' &&
       (
         needs.security_scans.outputs.policy_failed == 'false' ||
         needs.manual_approval.result == 'success'
