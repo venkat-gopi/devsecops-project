@@ -188,6 +188,7 @@ jobs:
       low_count: ${{ steps.compile.outputs.low_count }}
       secrets_count: ${{ steps.compile.outputs.secrets_count }}
       policy_failed: ${{ steps.opa.outputs.policy_failed }}
+      container_build_ok: ${{ steps.container_scan.outputs.container_build_ok }}
 
     steps:
       - name: Checkout code
@@ -195,6 +196,33 @@ jobs:
 
       - name: Create reports directory
         run: mkdir -p reports
+      - name: Customer app intake for security scanning
+        run: |
+          echo "=================================================="
+          echo "CUSTOMER APP INTAKE FOR SECURITY SCANNING"
+          echo "=================================================="
+
+          rm -rf app
+          mkdir -p app
+
+          if [ "${{ github.event.inputs.customer_source }}" = "external-github-repo" ]; then
+            echo "Cloning customer repository into app/"
+            git clone "${{ github.event.inputs.customer_repo_url }}" app
+            rm -rf app/.git
+          else
+            echo "Using current repository as customer app"
+            rsync -av ./ app/ \
+              --exclude ".git" \
+              --exclude ".github" \
+              --exclude "scripts" \
+              --exclude "reports" \
+              --exclude "policy" \
+              --exclude "k8s" \
+              --exclude "app"
+          fi
+
+          echo "Dockerfile found for scanning:"
+          find app -name "Dockerfile" -type f
 
       - name: "Layer 1: GitLeaks Secret Scanning"
         continue-on-error: true
@@ -341,29 +369,51 @@ jobs:
           echo "Report generated: reports/snyk-report.json"
 
       - name: "Layer 4: Container Image Scanning"
+        id: container_scan
         continue-on-error: true
         run: |
           echo "=================================================="
           echo "LAYER 4: CONTAINER IMAGE SCANNING"
           echo "=================================================="
           echo "Purpose:"
-          echo "This scan checks the Docker container image for"
-          echo "operating system package vulnerabilities and image-level CVEs."
+          echo "This scan checks the same Docker image build path that will later be used for deployment."
           echo ""
 
-          if [ ! -f Dockerfile ]; then
-            echo "No Dockerfile found."
-            echo "Skipping container image scanning."
-            echo '{"Results":[],"status":"skipped","message":"Dockerfile not found"}' > reports/trivy-report.json
+          echo "container_build_ok=false" >> "$GITHUB_OUTPUT"
+
+          if ! find app -name "Dockerfile" -type f | grep -q .; then
+            echo "ERROR: No Dockerfile found inside customer app folder."
+            cat > reports/trivy-report.json <<EOF
+      {
+        "Results": [],
+        "status": "dockerfile_missing",
+        "message": "No Dockerfile found inside app/. Deployment is blocked."
+      }
+      EOF
             exit 0
           fi
 
-          echo "Dockerfile found. Building temporary image for scanning..."
-          docker build -t local-scan-image:${{ env.IMAGE_TAG }} . || {
-            echo "Docker build failed. Creating empty Trivy report."
-            echo '{"Results":[],"status":"docker_build_failed"}' > reports/trivy-report.json
+          chmod +x scripts/dockerfile_first_build.sh
+
+          echo "Building customer Docker image in scan-only mode..."
+          if ! bash scripts/dockerfile_first_build.sh \
+            "${{ env.APP_NAME }}" \
+            "${{ env.IMAGE_TAG }}" \
+            "local" \
+            "scan-only"; then
+
+            echo "ERROR: Docker build failed during container scanning."
+            cat > reports/trivy-report.json <<EOF
+      {
+        "Results": [],
+        "status": "docker_build_failed",
+        "message": "Customer Dockerfile build failed during security scanning. Deployment is blocked."
+      }
+      EOF
             exit 0
-          }
+          fi
+
+          echo "container_build_ok=true" >> "$GITHUB_OUTPUT"
 
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
@@ -372,11 +422,10 @@ jobs:
             --format json \
             --output reports/trivy-report.json \
             --severity LOW,MEDIUM,HIGH,CRITICAL \
-            local-scan-image:${{ env.IMAGE_TAG }} || true
+            "$IMAGE" || true
 
           echo "Container image scanning completed."
           echo "Report generated: reports/trivy-report.json"
-
 
       - name: "Layer 5: Infrastructure as Code Scanning"
         continue-on-error: true
@@ -566,18 +615,24 @@ jobs:
           echo "Reviewer approved deployment."
           echo "Proceeding to EKS deployment."
 
-  deploy_to_eks:
-    name: Deploy to Amazon EKS
+  build_and_push_image:
+    name: Build and Push Customer Docker Image
     runs-on: ubuntu-latest
     needs: [security_scans, manual_approval]
 
     if: |
       always() &&
       needs.security_scans.result == 'success' &&
+      needs.security_scans.outputs.container_build_ok == 'true' &&
+      env.DEPLOY_ENV != 'skip-deployment' &&
       (
         needs.security_scans.outputs.policy_failed == 'false' ||
         needs.manual_approval.result == 'success'
       )
+
+    outputs:
+      image: ${{ steps.export.outputs.image }}
+      app_port: ${{ steps.export.outputs.app_port }}
 
     steps:
       - name: Checkout code
@@ -586,7 +641,7 @@ jobs:
       - name: Customer app intake
         run: |
           echo "=================================================="
-          echo "CUSTOMER APP INTAKE FOR DEPLOYMENT"
+          echo "CUSTOMER APP INTAKE FOR DOCKER BUILD"
           echo "=================================================="
 
           rm -rf app
@@ -611,20 +666,13 @@ jobs:
           echo "Dockerfile found:"
           find app -name "Dockerfile" -type f
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push Docker image using customer Dockerfile
+      - name: Build and push image using customer Dockerfile
         run: |
           chmod +x scripts/dockerfile_first_build.sh
 
@@ -634,6 +682,34 @@ jobs:
             "${{ secrets.DOCKER_USERNAME }}" \
             "push"
 
+      - name: Export image details
+        id: export
+        run: |
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "app_port=$APP_PORT" >> $GITHUB_OUTPUT
+
+          echo "Image: $IMAGE"
+          echo "App port: $APP_PORT"
+
+  deploy_dev:
+    name: Deploy to Dev Namespace
+    runs-on: ubuntu-latest
+    needs: build_and_push_image
+    environment:
+      name: dev
+    if: needs.build_and_push_image.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
       - name: Connect kubectl to EKS
         run: |
           aws eks update-kubeconfig \
@@ -642,49 +718,157 @@ jobs:
 
           kubectl get nodes
 
-      - name: Deploy to EKS
+      - name: Deploy to dev
         run: |
-          IMAGE="${{ env.IMAGE }}"
-          APP_PORT="${{ env.APP_PORT }}"
+          ENV_NAME="dev"
+          SERVICE_TYPE="ClusterIP"
+          IMAGE="${{ needs.build_and_push_image.outputs.image }}"
+          APP_PORT="${{ needs.build_and_push_image.outputs.app_port }}"
 
           if [ -z "$APP_PORT" ]; then
             APP_PORT="80"
           fi
 
-          echo "=================================================="
-          echo "DEPLOYING TO EKS"
-          echo "=================================================="
-          echo "Image: $IMAGE"
-          echo "Application Port: $APP_PORT"
+          kubectl create namespace "$ENV_NAME" --dry-run=client -o yaml | kubectl apply -f -
 
           sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml \
             | sed "s|CONTAINER_PORT_PLACEHOLDER|$APP_PORT|g" \
-            > k8s/deployment-final.yaml
+            | sed "s|APP_ENV_PLACEHOLDER|$ENV_NAME|g" \
+            > k8s/deployment-dev.yaml
 
           sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
-            > k8s/service-final.yaml
+            | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
+            > k8s/service-dev.yaml
 
-          echo "Final deployment manifest:"
-          cat k8s/deployment-final.yaml
+          kubectl apply -n "$ENV_NAME" -f k8s/deployment-dev.yaml
+          kubectl apply -n "$ENV_NAME" -f k8s/service-dev.yaml
 
-          echo "Final service manifest:"
-          cat k8s/service-final.yaml
+          kubectl rollout status deployment/devsecops-app -n "$ENV_NAME" --timeout=180s
 
-          kubectl apply -f k8s/deployment-final.yaml
-          kubectl apply -f k8s/service-final.yaml
+          kubectl get pods -n "$ENV_NAME"
+          kubectl get svc -n "$ENV_NAME"
 
-          kubectl rollout status deployment/devsecops-app --timeout=180s
+  deploy_staging:
+    name: Deploy to Staging Namespace
+    runs-on: ubuntu-latest
+    needs: [build_and_push_image, deploy_dev]
+    environment:
+      name: staging
+    if: needs.deploy_dev.result == 'success'
 
-      - name: Show service URL
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Connect kubectl to EKS
         run: |
-          echo "=================================================="
-          echo "EKS DEPLOYMENT STATUS"
-          echo "=================================================="
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name "${{ secrets.EKS_CLUSTER_NAME }}"
 
-          kubectl get pods -o wide
-          kubectl get svc devsecops-service
+          kubectl get nodes
+
+      - name: Deploy to staging
+        run: |
+          ENV_NAME="staging"
+          SERVICE_TYPE="ClusterIP"
+          IMAGE="${{ needs.build_and_push_image.outputs.image }}"
+          APP_PORT="${{ needs.build_and_push_image.outputs.app_port }}"
+
+          if [ -z "$APP_PORT" ]; then
+            APP_PORT="80"
+          fi
+
+          kubectl create namespace "$ENV_NAME" --dry-run=client -o yaml | kubectl apply -f -
+
+          sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml \
+            | sed "s|CONTAINER_PORT_PLACEHOLDER|$APP_PORT|g" \
+            | sed "s|APP_ENV_PLACEHOLDER|$ENV_NAME|g" \
+            > k8s/deployment-staging.yaml
+
+          sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
+            | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
+            > k8s/service-staging.yaml
+
+          kubectl apply -n "$ENV_NAME" -f k8s/deployment-staging.yaml
+          kubectl apply -n "$ENV_NAME" -f k8s/service-staging.yaml
+
+          kubectl rollout status deployment/devsecops-app -n "$ENV_NAME" --timeout=180s
+
+          kubectl get pods -n "$ENV_NAME"
+          kubectl get svc -n "$ENV_NAME"
+
+  deploy_production:
+    name: Deploy to Production Namespace
+    runs-on: ubuntu-latest
+    needs: [build_and_push_image, deploy_staging]
+    environment:
+      name: production
+    if: needs.deploy_staging.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Connect kubectl to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name "${{ secrets.EKS_CLUSTER_NAME }}"
+
+          kubectl get nodes
+
+      - name: Deploy to production
+        run: |
+          ENV_NAME="production"
+          SERVICE_TYPE="LoadBalancer"
+          IMAGE="${{ needs.build_and_push_image.outputs.image }}"
+          APP_PORT="${{ needs.build_and_push_image.outputs.app_port }}"
+
+          if [ -z "$APP_PORT" ]; then
+            APP_PORT="80"
+          fi
+
+          kubectl create namespace "$ENV_NAME" --dry-run=client -o yaml | kubectl apply -f -
+
+          sed "s|DOCKER_IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml \
+            | sed "s|CONTAINER_PORT_PLACEHOLDER|$APP_PORT|g" \
+            | sed "s|APP_ENV_PLACEHOLDER|$ENV_NAME|g" \
+            > k8s/deployment-production.yaml
+
+          sed "s|TARGET_PORT_PLACEHOLDER|$APP_PORT|g" k8s/service.yaml \
+            | sed "s|SERVICE_TYPE_PLACEHOLDER|$SERVICE_TYPE|g" \
+            > k8s/service-production.yaml
+
+          kubectl apply -n "$ENV_NAME" -f k8s/deployment-production.yaml
+          kubectl apply -n "$ENV_NAME" -f k8s/service-production.yaml
+
+          kubectl rollout status deployment/devsecops-app -n "$ENV_NAME" --timeout=180s
+
+          kubectl get pods -n "$ENV_NAME"
+          kubectl get svc -n "$ENV_NAME"
+
+      - name: Show production service URL
+        run: |
+          echo "Waiting for production LoadBalancer..."
+          sleep 30
+
+          kubectl get svc devsecops-service -n production
 
           echo ""
-          echo "If EXTERNAL-IP is pending, wait 1-2 minutes."
-          echo "Then run locally:"
-          echo "kubectl get svc devsecops-service"
+          echo "If EXTERNAL-IP is pending, wait 1-2 minutes and check again:"
+          echo "kubectl get svc devsecops-service -n production"

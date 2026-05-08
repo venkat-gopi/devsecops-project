@@ -1,11 +1,11 @@
-apiVersion: v1
+kapiVersion: v1
 kind: Service
 metadata:
   name: devsecops-service
 spec:
   selector:
     app: devsecops-app
-  type: LoadBalancer
+  type: SERVICE_TYPE_PLACEHOLDER
   ports:
     - port: 80
       targetPort: TARGET_PORT_PLACEHOLDER

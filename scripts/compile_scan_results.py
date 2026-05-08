@@ -59,6 +59,11 @@ def main():
     # Trivy
     trivy = load_json(os.path.join(reports_dir, "trivy-report.json"))
     if isinstance(trivy, dict):
+        trivy_status = str(trivy.get("status", "")).lower()
+
+        if trivy_status in ["docker_build_failed", "dockerfile_missing"]:
+            critical += 1
+
         for result in trivy.get("Results", []):
             for vuln in result.get("Vulnerabilities") or []:
                 severity = vuln.get("Severity", "").upper()
@@ -70,7 +75,6 @@ def main():
                     medium += 1
                 elif severity == "LOW":
                     low += 1
-
     # Checkov
     checkov = load_json(os.path.join(reports_dir, "checkov-report.json"))
  

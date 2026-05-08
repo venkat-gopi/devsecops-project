@@ -365,27 +365,20 @@ def generate_trivy(reports_dir, output_dir, app_name):
     rows = []
 
     if isinstance(data, dict):
-        for result in data.get("Results", []):
-            if not isinstance(result, dict):
-                continue
+        status = str(data.get("status", "")).lower()
+        message = data.get("message", "")
 
-            target = result.get("Target", "container image")
-            vulns = result.get("Vulnerabilities") or []
-
-            for vuln in vulns:
-                if not isinstance(vuln, dict):
-                    continue
-
-                rows.append({
-                    "Tool": "Trivy",
-                    "Severity": str(vuln.get("Severity", "INFO")).upper(),
-                    "CVE": vuln.get("VulnerabilityID", "N/A"),
-                    "Package": vuln.get("PkgName", "N/A"),
-                    "Installed Version": vuln.get("InstalledVersion", "N/A"),
-                    "Fixed Version": vuln.get("FixedVersion", "No fix available"),
-                    "Target": target,
-                    "Issue": vuln.get("Title", "N/A"),
-                })
+        if status in ["docker_build_failed", "dockerfile_missing"]:
+            rows.append({
+                "Tool": "Trivy",
+                "Severity": "CRITICAL",
+                "CVE": "N/A",
+                "Package": "Docker Build",
+                "Installed Version": "N/A",
+                "Fixed Version": "Fix Dockerfile/build context",
+                "Target": "Customer Dockerfile",
+                "Issue": message or "Container image could not be built for scanning",
+            })
 
     headers = [
         "Tool",

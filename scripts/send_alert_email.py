@@ -53,6 +53,17 @@ def build_vulnerability_rows(reports_dir):
     trivy_path = os.path.join(reports_dir, "trivy-report.json")
     if os.path.exists(trivy_path):
         data = load_json_safely(trivy_path)
+
+        status = str(data.get("status", "")).lower()
+        if status in ["docker_build_failed", "dockerfile_missing"]:
+            rows.append({
+                "source": "Trivy",
+                "severity": "CRITICAL",
+                "package": "Docker Build",
+                "issue": data.get("message", "Container image build failed"),
+                "fix": "Fix Dockerfile path, package files, build context, or dependency install command"
+            })
+
         for result in data.get("Results", []):
             for v in (result.get("Vulnerabilities") or [])[:5]:
                 rows.append({

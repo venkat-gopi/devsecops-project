@@ -20,3 +20,6 @@ spec:
           imagePullPolicy: Always
           ports:
             - containerPort: CONTAINER_PORT_PLACEHOLDER
+          env:
+            - name: APP_ENV
+              value: APP_ENV_PLACEHOLDER
