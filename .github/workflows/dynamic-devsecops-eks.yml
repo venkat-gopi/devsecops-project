@@ -661,8 +661,8 @@ jobs:
       )
 
     outputs:
-      image: ${{ steps.build_image.outputs.image }}
-      app_port: ${{ steps.build_image.outputs.app_port }}
+      image: ${{ steps.export.outputs.image }}
+      app_port: ${{ steps.export.outputs.app_port }}
 
     steps:
       - name: Checkout code
@@ -703,7 +703,6 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push image using customer Dockerfile
-        id: build_image
         run: |
           chmod +x scripts/dockerfile_first_build.sh
 
@@ -712,6 +711,27 @@ jobs:
             "${{ env.IMAGE_TAG }}" \
             "${{ secrets.DOCKER_USERNAME }}" \
             "push"
+
+      - name: Export image details to next jobs
+        id: export
+        run: |
+          echo "IMAGE from environment: $IMAGE"
+          echo "APP_PORT from environment: $APP_PORT"
+
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: IMAGE is empty after Docker build."
+            exit 1
+          fi
+
+          if [ -z "$APP_PORT" ]; then
+            APP_PORT="80"
+          fi
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "app_port=$APP_PORT" >> "$GITHUB_OUTPUT"
+
+          echo "Exported image=$IMAGE"
+          echo "Exported app_port=$APP_PORT"
 
   deploy_dev:
     name: Deploy to Dev Namespace
