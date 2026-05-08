@@ -77,5 +77,33 @@ echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> "$GITHUB_ENV"
 echo "APP_PORT=$EXPOSED_PORT" >> "$GITHUB_ENV"
 echo "IMAGE_LOCAL_NAME=$SAFE_APP_NAME" >> "$GITHUB_ENV"
 
-echo "Final Image: $IMAGE"
+echo "=================================================="
+echo "BUILD RESULT"
+echo "=================================================="
+echo "Final Image      : $IMAGE"
+echo "Safe App Name    : $SAFE_APP_NAME"
 echo "Detected App Port: $EXPOSED_PORT"
+
+if [ -z "$SAFE_APP_NAME" ]; then
+  echo "ERROR: SAFE_APP_NAME is empty"
+  exit 1
+fi
+
+if [ -z "$EXPOSED_PORT" ]; then
+  EXPOSED_PORT="80"
+fi
+
+# For next steps in the same job
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+  echo "SAFE_APP_NAME=$SAFE_APP_NAME" >> "$GITHUB_ENV"
+  echo "APP_PORT=$EXPOSED_PORT" >> "$GITHUB_ENV"
+  echo "IMAGE_LOCAL_NAME=$SAFE_APP_NAME" >> "$GITHUB_ENV"
+fi
+
+# For other jobs: dev, staging, production
+# Do not export full IMAGE because it contains Docker username secret.
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  echo "safe_app_name=$SAFE_APP_NAME" >> "$GITHUB_OUTPUT"
+  echo "app_port=$EXPOSED_PORT" >> "$GITHUB_OUTPUT"
+fi
