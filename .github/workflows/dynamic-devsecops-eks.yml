@@ -589,7 +589,7 @@ jobs:
           name: individual-excel-security-reports-${{ github.run_id }}
           path: reports/*.xlsx
           retention-days: 60
-	
+
   send_email_alert:
     name: Send Email Alert If Policy Failed
     runs-on: ubuntu-latest
