@@ -25,60 +25,66 @@ After scanning, the pipeline generates reports, applies policy decisions, and de
 
 # High-Level Pipeline Flow
 
-```mermaid
-flowchart TD
-
-A[Customer Code / Repository]
---> B[GitHub Actions Workflow]
-
-B --> C[File Intake & App Type Detection]
-
-C --> C1[Detect Dockerfile]
-C --> C2[Detect Application Type]
-C --> C3[Validate Repository Structure]
-
-C --> D[Layer-wise Security Scanning]
-
-D --> D1[GitLeaks Secret Scan]
-D --> D2[SonarCloud SAST Analysis]
-D --> D3[Dependency Vulnerability Scan]
-D --> D4[Snyk Scan]
-D --> D5[Trivy Container Scan]
-D --> D6[Checkov IaC Scan]
-
-D3 --> D31[npm audit]
-D3 --> D32[Safety]
-D3 --> D33[OWASP Dependency Check]
-D3 --> D34[gosec]
-
-D --> E[AI Fix Recommendation Engine]
-
-E --> E1[Ollama + TinyLlama]
-E --> E2[Analyze Scan Results]
-E --> E3[Generate AI Fix Recommendations]
-E --> E4[Add AI Suggestions into Excel Reports]
-
-E --> F[Individual Excel Report Generator]
-
-F --> F1[GitLeaks Report.xlsx]
-F --> F2[SonarCloud Report.xlsx]
-F --> F3[Dependency Report.xlsx]
-F --> F4[Snyk Report.xlsx]
-F --> F5[Trivy Report.xlsx]
-F --> F6[Checkov Report.xlsx]
-
-F --> G[OPA Policy Gate]
-
-G -->|Policy Passed| H[Deploy to Amazon EKS]
-
-G -->|Policy Failed| I[Email Alert + Manual Approval]
-
-I --> J[Deploy After Approval]
-
-H --> H1[Dev Environment]
-H --> H2[Staging Environment]
-H --> H3[Production Environment]
-```                        
+```text
+Customer Code / Repository
+        │
+        ▼
+GitHub Actions Workflow
+        │
+        ▼
+File Intake + App Type Detection
+        │
+        ├── Detect Dockerfile
+        ├── Detect Application Type
+        └── Validate Repository Structure
+        │
+        ▼
+Layer-wise Security Scanning
+        │
+        ├── GitLeaks Secret Scan
+        ├── SonarCloud SAST Analysis
+        ├── Dependency Vulnerability Scan
+        │      ├── npm audit
+        │      ├── Safety
+        │      ├── OWASP Dependency Check
+        │      └── gosec
+        ├── Snyk Scan
+        ├── Trivy Container Scan
+        └── Checkov IaC Scan
+        │
+        ▼
+AI Fix Recommendation Engine
+        │
+        ├── Ollama Local LLM
+        ├── TinyLlama Model
+        ├── Analyze Security Reports
+        ├── Generate AI-Based Fix Recommendations
+        └── Add AI Suggestions into Excel Reports
+        │
+        ▼
+Individual Excel Report Generation
+        │
+        ├── GitLeaks Report.xlsx
+        ├── SonarCloud Report.xlsx
+        ├── Dependency Report.xlsx
+        ├── Snyk Report.xlsx
+        ├── Trivy Report.xlsx
+        └── Checkov Report.xlsx
+        │
+        ▼
+OPA Policy Gate
+        │
+        ├──────────────┬────────────────
+        │              │
+        ▼              ▼
+Policy Passed     Policy Failed
+        │              │
+        ▼              ▼
+Deploy to EKS     Email Alert + Manual Approval
+        │              │
+        └──────► Deploy After Approval
+```
+                       
 
 ## Key Features
 
