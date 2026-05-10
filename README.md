@@ -23,7 +23,7 @@ After scanning, the pipeline generates reports, applies policy decisions, and de
 
 ---
 
-## High-Level Pipeline Flow
+# High-Level Pipeline Flow
 
 ```mermaid
 flowchart TD
@@ -78,8 +78,7 @@ I --> J[Deploy After Approval]
 H --> H1[Dev Environment]
 H --> H2[Staging Environment]
 H --> H3[Production Environment]
-```
-                            
+```                        
 
 ## Key Features
 
