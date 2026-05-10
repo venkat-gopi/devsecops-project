@@ -25,44 +25,38 @@ After scanning, the pipeline generates reports, applies policy decisions, and de
 
 ## High-Level Pipeline Flow
 
-```text
-Customer provides application repository
+Customer Code / Repo
         |
         v
-GitHub Actions workflow starts
+GitHub Actions Workflow
         |
         v
-Customer application files are prepared
+File Intake + App Type Detection
         |
         v
-Layer-wise security scans are executed
+Security Scanning Layers
+  - GitLeaks
+  - SonarCloud
+  - npm audit / Safety / OWASP / gosec
+  - Snyk
+  - Trivy
+  - Checkov
         |
         v
-Individual Excel reports are generated
+Compile Scan Summary
         |
         v
-OPA policy gate evaluates scan results
+OPA Policy Gate
         |
-        v
-If policy fails, email alert is sent
-        |
-        v
-Manual approval is required if needed
-        |
-        v
-Docker image is built using customer Dockerfile
-        |
-        v
-Docker image is pushed to Docker Hub
-        |
-        v
-Application is deployed to Amazon EKS
-        |
-        v
-Deployment happens in dev, staging, and production namespaces
-```
-
----
+        +------------------+
+        |                  |
+        v                  v
+Policy Passed        Policy Failed
+        |                  |
+        v                  v
+Deploy to EKS     Email Alert + Manual Approval
+        |                  |
+        +---------> Deploy after approval
 
 ## Key Features
 
