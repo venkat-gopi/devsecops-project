@@ -25,38 +25,84 @@ After scanning, the pipeline generates reports, applies policy decisions, and de
 
 ## High-Level Pipeline Flow
 
-Customer Code / Repo
-        |
-        v
-GitHub Actions Workflow
-        |
-        v
-File Intake + App Type Detection
-        |
-        v
-Security Scanning Layers
-  - GitLeaks
-  - SonarCloud
-  - npm audit / Safety / OWASP / gosec
-  - Snyk
-  - Trivy
-  - Checkov
-        |
-        v
-Compile Scan Summary
-        |
-        v
-OPA Policy Gate
-        |
-        +------------------+
-        |                  |
-        v                  v
-Policy Passed        Policy Failed
-        |                  |
-        v                  v
-Deploy to EKS     Email Alert + Manual Approval
-        |                  |
-        +---------> Deploy after approval
+┌──────────────────────────────────────────────┐
+│         Customer Code / Repository          │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│         GitHub Actions CI/CD Workflow       │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│      File Intake & App Type Detection       │
+│  - Detect Dockerfile                        │
+│  - Detect Application Type                  │
+│  - Validate Repository Structure            │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│          Layer-wise Security Scanning       │
+├──────────────────────────────────────────────┤
+│  Layer 1 → GitLeaks Secret Scan             │
+│  Layer 2 → SonarCloud SAST Analysis         │
+│  Layer 3 → Dependency Vulnerability Scan    │
+│             - npm audit                     │
+│             - Safety                        │
+│             - OWASP Dependency Check        │
+│             - gosec                         │
+│  Layer 4 → Snyk Scan                        │
+│  Layer 5 → Trivy Container Scan             │
+│  Layer 6 → Checkov IaC Scan                 │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│         AI Fix Recommendation Engine        │
+│         (Ollama + TinyLlama LLM)            │
+│  - Analyze Scan Results                     │
+│  - Generate Fix Recommendations             │
+│  - Add AI Suggestions into Excel Reports    │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│         Individual Excel Report Generator   │
+│  - GitLeaks Report.xlsx                     │
+│  - SonarCloud Report.xlsx                   │
+│  - Dependency Scan Report.xlsx              │
+│  - Snyk Report.xlsx                         │
+│  - Trivy Report.xlsx                        │
+│  - Checkov Report.xlsx                      │
+│  - AI Recommendations Included              │
+└──────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│              OPA Policy Gate                │
+│  - Validate Security Policies               │
+│  - Compliance Verification                  │
+└──────────────────────────────────────────────┘
+                 │                  │
+        ┌────────┘                  └────────┐
+        ▼                                   ▼
+┌──────────────────────┐      ┌─────────────────────────┐
+│    Policy Passed     │      │     Policy Failed       │
+└──────────────────────┘      └─────────────────────────┘
+        │                                   │
+        ▼                                   ▼
+┌──────────────────────┐      ┌─────────────────────────┐
+│ Deploy to Amazon EKS │      │ Send Email Alert        │
+│  - Dev Environment   │      │ + Manual Approval       │
+│  - Staging           │      └─────────────────────────┘
+│  - Production        │                   │
+└──────────────────────┘                   ▼
+        │                   ┌─────────────────────────┐
+        └──────────────────▶│ Deploy After Approval   │
+                            └─────────────────────────┘
+                            
 
 ## Key Features
 
