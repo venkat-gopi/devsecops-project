@@ -613,7 +613,8 @@ jobs:
 
       - name: Run AI Fix Recommendation Engine
         run: |
-          python3 scripts/AI_fix_recommendation.py
+          python3 scripts/ai_fix_recommendation.py
+
   send_email_alert:
     name: Send Email Alert If Policy Failed
     runs-on: ubuntu-latest
