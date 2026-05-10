@@ -53,15 +53,6 @@ Layer-wise Security Scanning
         └── Checkov IaC Scan
         │
         ▼
-AI Fix Recommendation Engine
-        │
-        ├── Ollama Local LLM
-        ├── TinyLlama Model
-        ├── Analyze Security Reports
-        ├── Generate AI-Based Fix Recommendations
-        └── Add AI Suggestions into Excel Reports
-        │
-        ▼
 Individual Excel Report Generation
         │
         ├── GitLeaks Report.xlsx
