@@ -589,32 +589,7 @@ jobs:
           name: individual-excel-security-reports-${{ github.run_id }}
           path: reports/*.xlsx
           retention-days: 60
-
-      - name: Install Ollama
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama Service
-        run: |
-          ollama serve > /dev/null 2>&1 &
-          sleep 10
-
-      - name: Pull TinyLlama Model
-        run: |
-          ollama pull tinyllama
-
-      - name: Verify Ollama
-        run: |
-          ollama list
-
-      - name: Install AI Dependencies
-        run: |
-          pip install pandas openpyxl requests
-
-      - name: Run AI Fix Recommendation Engine
-        run: |
-          python3 scripts/ai_fix_recommendation.py
-
+	
   send_email_alert:
     name: Send Email Alert If Policy Failed
     runs-on: ubuntu-latest
